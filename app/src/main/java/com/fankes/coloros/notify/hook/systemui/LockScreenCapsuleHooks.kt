@@ -293,10 +293,15 @@ internal class LockScreenCapsuleHooks(
         sbn: StatusBarNotification?,
     ): ReplacementPlan? {
         if (!lockScreenCapsuleEnabled()) return null
-        // ColorOS composes the contact avatar for whitelisted packages. Yielding is checked before
-        // the cache lookup so a status-bar replacement cached for the same package cannot take the
-        // icon slot either.
-        if (configuration.snapshot.resolver.shouldYieldToHostAvatar(context, packageName)) return null
+        val snapshot = configuration.snapshot
+        // The capsule draws the plain app icon, exactly like the status bar and the notification
+        // centre do — the contact photo of an avatar package is composed by the host in the header,
+        // never here. Yielding to the host avatar therefore only left the stock icon behind, which is
+        // what the lock-screen pill showed while the header above it was already themed, so the
+        // desktop theme is resolved first and unconditionally.
+        if (sbn != null && snapshot.resolver.panelThemeIconsEnabled()) {
+            resolveThemeReplacement(context, sbn, snapshot)?.let { return it }
+        }
         StatusBarIconReplacementCache.lookup(key, packageName)?.let { cached ->
             val drawable = try {
                 cached.icon.loadDrawable(context)?.mutate()
@@ -305,13 +310,13 @@ internal class LockScreenCapsuleHooks(
                     scope = "lockscreen:capsule:load_cached",
                     message = "锁屏胶囊缓存图标解码失败",
                     cause = exception,
-                    revision = configuration.snapshot.revision,
+                    revision = snapshot.revision,
                 )
                 null
             } ?: return null
             replacementDrawables.add(drawable)
             return ReplacementPlan(
-                snapshot = configuration.snapshot,
+                snapshot = snapshot,
                 icon = cached.icon,
                 drawable = drawable,
                 isColorable = cached.isColorable,
@@ -319,7 +324,6 @@ internal class LockScreenCapsuleHooks(
         }
 
         val notification = sbn ?: return null
-        val snapshot = configuration.snapshot
         return try {
             snapshot.resolver.resolveStatusBarIconPlan(
                 context = context,
@@ -353,6 +357,36 @@ internal class LockScreenCapsuleHooks(
             )
             null
         }
+    }
+
+    /**
+     * Desktop theme icon for one capsule row. Theme assets are full-colour launcher icons, so the
+     * plan is never colourable: tinting would flatten them into a white silhouette.
+     */
+    private fun resolveThemeReplacement(
+        context: Context,
+        sbn: StatusBarNotification,
+        snapshot: RuntimeSnapshot,
+    ): ReplacementPlan? {
+        val icon = snapshot.resolver.resolveLockScreenThemeIcon(context, sbn) ?: return null
+        val drawable = try {
+            icon.loadDrawable(context)?.mutate()
+        } catch (exception: Exception) {
+            diagnostics.runtimeFailure(
+                scope = "lockscreen:capsule:theme_load",
+                message = "锁屏胶囊主题图标解码失败",
+                cause = exception,
+                revision = snapshot.revision,
+            )
+            null
+        } ?: return null
+        replacementDrawables.add(drawable)
+        return ReplacementPlan(
+            snapshot = snapshot,
+            icon = icon,
+            drawable = drawable,
+            isColorable = false,
+        )
     }
 
     private fun applyLockScreenGlyph(iconView: ImageView, drawable: Drawable, isColorable: Boolean) {

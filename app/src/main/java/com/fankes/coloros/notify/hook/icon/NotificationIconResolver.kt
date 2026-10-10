@@ -64,6 +64,25 @@ internal class NotificationIconResolver(
     fun panelThemeIconsEnabled(): Boolean =
         NotificationIconPolicy.shouldResolveTheme(policyConfig, IconSurface.Panel)
 
+    /**
+     * Desktop theme icon as an [Icon] for the lock-screen capsule, which carries both an [Icon] and a
+     * [Drawable] slot and therefore cannot use [resolvePanelThemeDrawable] alone.
+     */
+    fun resolveLockScreenThemeIcon(
+        context: Context,
+        sbn: StatusBarNotification,
+    ): Icon? = try {
+        themeIcons.resolve(context, sbn)?.let { Icon.createWithBitmap(it) }
+    } catch (exception: Exception) {
+        diagnostics.runtimeFailure(
+            scope = "icon_resolver:lockscreen:theme_icon",
+            message = "锁屏胶囊主题图标解码失败，交回宿主实现",
+            cause = exception,
+            revision = revision,
+        )
+        null
+    }
+
     fun resolveStatusBarIconPlan(
         context: Context,
         sbn: StatusBarNotification,
