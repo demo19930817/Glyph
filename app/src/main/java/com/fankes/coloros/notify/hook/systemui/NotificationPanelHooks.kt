@@ -17,6 +17,7 @@ import com.fankes.coloros.notify.diagnostics.OccurrencePolicy
 import com.fankes.coloros.notify.hook.HookRegistrar
 import com.fankes.coloros.notify.hook.icon.NotificationIconResolver
 import com.fankes.coloros.notify.hook.runtimeFailure
+import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
 
 internal class NotificationPanelHooks(
@@ -32,6 +33,7 @@ internal class NotificationPanelHooks(
         installOplusHeaderHooks()
         installGroupIconManagerHooks()
         installPackageIconResolverHooks()
+        installPackageIconByNameHooks()
         members.headerOnContentUpdated?.let { method ->
             hooks.install(method, "systemui.panel.header.onContentUpdated") { chain ->
                 val result = chain.proceed()
@@ -167,6 +169,61 @@ internal class NotificationPanelHooks(
                     "（返回值=${replacement.javaClass.simpleName}，suspend=$suspendSignature）",
                 attributes = mapOf("package" to packageName),
                 occurrence = OccurrencePolicy.Once("package_icon_replaced:$packageName"),
+            )
+            replacement
+        }
+    }
+
+    /**
+     * With "hide notification content" on, the lock-screen hero asks for the app icon **by package**
+     * (`getPackageIcon` / `getHeaderIconBadgeDrawable`) instead of through the notification-scoped
+     * entry above. That is why the capsule at the bottom was already themed while the notification
+     * above it still showed the stock icon: only the notification-scoped path was covered.
+     */
+    private fun installPackageIconByNameHooks() {
+        val resolver = members.packageIconResolver ?: return
+        installPackageIconByNameHook(
+            resolver = resolver,
+            method = resolver.getPackageIcon,
+            tag = "systemui.panel.packageIconByName",
+        )
+        installPackageIconByNameHook(
+            resolver = resolver,
+            method = resolver.getHeaderIconBadgeDrawable,
+            tag = "systemui.panel.headerBadgeDrawable",
+        )
+    }
+
+    private fun installPackageIconByNameHook(
+        resolver: PackageIconResolverMembers,
+        method: Method?,
+        tag: String,
+    ) {
+        val target = method ?: return
+        hooks.install(target, tag) { chain ->
+            val snapshot = configuration.snapshot
+            if (!snapshot.config.panelIconReplacementEnabled) return@install chain.proceed()
+            if (!snapshot.resolver.panelThemeIconsEnabled()) return@install chain.proceed()
+            val packageName = chain.args.firstOrNull { it is String } as? String
+                ?: return@install chain.proceed()
+            val context = resolverContext(resolver, chain.thisObject) ?: return@install chain.proceed()
+            val replacement = snapshot.resolver.resolveThemeDrawableByPackage(context, packageName)
+            if (replacement == null) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Warning,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "角标诊断：$packageName 按包名解析主题图标失败，保留 ColorOS 原图标",
+                    attributes = mapOf("package" to packageName),
+                    occurrence = OccurrencePolicy.Once("package_icon_by_name_missing:$packageName"),
+                )
+                return@install chain.proceed()
+            }
+            diagnostics.report(
+                level = DiagnosticLevel.Info,
+                event = DiagnosticEvent.PackageIconResolved,
+                message = "角标诊断：$packageName 已按包名替换为主题图标（$tag）",
+                attributes = mapOf("package" to packageName),
+                occurrence = OccurrencePolicy.Once("package_icon_by_name_replaced:$packageName"),
             )
             replacement
         }

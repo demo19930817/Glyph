@@ -61,6 +61,8 @@ internal data class PanelMembers(
 
 internal data class PackageIconResolverMembers(
     val getPackageIconForNotification: Method,
+    val getPackageIcon: Method?,
+    val getHeaderIconBadgeDrawable: Method?,
     val getContext: Method?,
 )
 
@@ -548,8 +550,16 @@ internal object SystemUiMembers {
         method.isAccessible = true
         val contextGetter = Reflection.findAnyMethod(resolverClass, "getContext", Context::class.java)
             ?.also { it.isAccessible = true }
+        // "Hide notification content" makes the lock-screen hero skip the notification-scoped entry
+        // and ask for the app icon by package, so those lookups are hooked as well.
         return PackageIconResolverMembers(
             getPackageIconForNotification = method,
+            getPackageIcon = Reflection.findAnyMethod(resolverClass, "getPackageIcon"),
+            getHeaderIconBadgeDrawable = Reflection.findAnyMethod(
+                resolverClass,
+                "getHeaderIconBadgeDrawable",
+                Drawable::class.java,
+            ),
             getContext = contextGetter,
         )
     }

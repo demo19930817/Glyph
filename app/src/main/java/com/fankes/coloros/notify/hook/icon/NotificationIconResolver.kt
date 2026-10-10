@@ -60,6 +60,25 @@ internal class NotificationIconResolver(
         null
     }
 
+    /**
+     * Desktop theme drawable for the host paths that only hand over a package name — the lock-screen
+     * hero and capsule in "hide notification content" mode never pass a StatusBarNotification.
+     */
+    fun resolveThemeDrawableByPackage(
+        context: Context,
+        packageName: String,
+    ): Drawable? = try {
+        themeIcons.resolveByPackage(context, packageName)?.toDrawable(context.resources)
+    } catch (exception: Exception) {
+        diagnostics.runtimeFailure(
+            scope = "icon_resolver:panel:theme_drawable:pkg",
+            message = "按包名解析桌面主题图标失败，保留 ColorOS 原图标",
+            cause = exception,
+            revision = revision,
+        )
+        null
+    }
+
     /** True when the notification centre currently draws desktop theme icons. */
     fun panelThemeIconsEnabled(): Boolean =
         NotificationIconPolicy.shouldResolveTheme(policyConfig, IconSurface.Panel)
