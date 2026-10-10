@@ -65,7 +65,7 @@ internal class ThemeIconProvider(
             context = context,
             packageName = packageName,
             user = null,
-            userId = UserHandle.myUserId(),
+            userId = USER_HANDLE_ALL,
         )
 
     private fun resolveByPackage(
@@ -499,5 +499,11 @@ internal class ThemeIconProvider(
         const val CACHE_TTL_MS = 10_000L
         const val MAX_CACHE_SIZE_KIB = 4 * 1024
         const val MAX_THEME_RENDER_DIMENSION = 512
+        /**
+         * `UserHandle.ALL`: no [StatusBarNotification] means no user handle is available, and the
+         * lookups then fall back to the user-independent public PackageManager API — the same path
+         * SystemUI's own notifications take.
+         */
+        const val USER_HANDLE_ALL = -1
     }
 }
