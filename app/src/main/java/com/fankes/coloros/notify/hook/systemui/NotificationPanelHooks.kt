@@ -803,7 +803,7 @@ internal class NotificationPanelHooks(
             val composite = members.backgroundWithAppIconFactory?.invoke(
                 null,
                 iconView.context,
-                normalizeAvatarBounds(avatar, iconView.context),
+                rasterizeAvatar(avatar, iconView.context),
                 badge,
                 packageName,
                 sbn.userId,
@@ -845,12 +845,12 @@ internal class NotificationPanelHooks(
     }
 
     /**
-     * The host factory rasterizes the base drawable at its intrinsic size; symbol avatars and
-     * not-yet-laid-out icons report 0/-1 and crash Bitmap.createBitmap inside
-     * getRoundRectDrawable ("width and height must be > 0"). Normalize those to a square bitmap.
+     * The host factory rasterizes and rescales the base drawable's own bitmap; symbol avatars,
+     * huge contact photos and not-yet-laid-out icons make that internal rescale produce a zero
+     * size ("width and height must be > 0"). Always hand it a clean 192×192 bitmap — the exact
+     * size of the host's own successful composites.
      */
-    private fun normalizeAvatarBounds(avatar: Drawable, context: Context): Drawable {
-        if (avatar.intrinsicWidth > 0 && avatar.intrinsicHeight > 0) return avatar
+    private fun rasterizeAvatar(avatar: Drawable, context: Context): Drawable {
         return try {
             val size = 192
             val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
