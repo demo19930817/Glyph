@@ -15,6 +15,9 @@ internal class XposedDiagnosticSink(
     private val processName: String,
 ) : DiagnosticSink {
     override fun write(record: DiagnosticRecord) {
+        // The formal release stays silent: only genuine runtime failures (Error) are written.
+        // Debug/Info/Warning diagnostics remain available to source builds for troubleshooting.
+        if (record.level != DiagnosticLevel.Error) return
         val contextualRecord = record.copy(
             attributes = mapOf("process" to processName) + record.attributes,
         )

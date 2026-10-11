@@ -2,12 +2,8 @@ package com.fankes.coloros.notify.hook.systemui
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.Canvas
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
-import android.graphics.Path
-import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.service.notification.StatusBarNotification
 import android.view.View
@@ -20,7 +16,6 @@ import com.fankes.coloros.notify.diagnostics.Diagnostics
 import com.fankes.coloros.notify.diagnostics.OccurrencePolicy
 import com.fankes.coloros.notify.hook.HookRegistrar
 import com.fankes.coloros.notify.hook.icon.NotificationIconResolver
-import com.fankes.coloros.notify.hook.memberMissing
 import com.fankes.coloros.notify.hook.runtimeFailure
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
@@ -40,7 +35,6 @@ internal class NotificationPanelHooks(
         installPackageIconResolverHooks()
         installPackageIconByNameHooks()
         installHiddenContentHooks()
-        installExpandedCanvasIconHook()
         members.headerOnContentUpdated?.let { method ->
             hooks.install(method, "systemui.panel.header.onContentUpdated") { chain ->
                 val result = chain.proceed()
@@ -608,14 +602,7 @@ internal class NotificationPanelHooks(
                     sbn = sbn,
                     originalSmallIcon = sbn.originalSmallIcon(diagnostics, snapshot.revision),
                 )
-            } ?: run {
-                // Null plan on a header row usually means "yield to the host avatar" — complete
-                // the rows where the host's own avatar channel came up empty instead.
-                if (target == PanelIconTarget.Header) {
-                    scheduleHostAvatarCompletion(icon, row, sbn, snapshot)
-                }
-                return
-            }
+            } ?: return
 
             icon.applyRenderPlan(plan, target)
             if (target == PanelIconTarget.Header) {
@@ -720,192 +707,5 @@ internal class NotificationPanelHooks(
 
     private companion object {
         const val HIDDEN_CONTENT_RETRY_DELAY_MILLIS = 256L
-        const val AVATAR_COMPLETION_RETRY_SHORT_MILLIS = 256L
-        const val AVATAR_COMPLETION_RETRY_LONG_MILLIS = 768L
-    }
-
-    /**
-     * ColorOS composes "contact avatar + app-icon badge" for conversation rows from its
-     * people-avatar channel, but that channel has no entry for some senders (channel posts, for
-     * example) — those rows silently fall back to the plain app icon while the aggregated
-     * lock-screen card next to them still shows the avatar, because the card reads it straight
-     * from the MessagingStyle. The module never removes avatars, it only completes the rows the
-     * host left behind: load the avatar from the very same helper the card uses and rebuild the
-     * composite with the host's own factory, so size, radius and badge placement stay stock.
-     *
-     * The host paints its composite asynchronously, so the attempt is retried; once a composite
-     * has been placed on a view it is not re-composed.
-     */
-    /**
-     * `applyExpandedCanvasIconWithBadge` is the host's FINAL icon setter for the header row: the
-     * async avatar+badge composition funnels through it. Completing avatar-less rows right after
-     * this call is race-free — timed retries alone kept losing to the host's own late write, which
-     * is why the completion ran but never stuck.
-     */
-    private fun installExpandedCanvasIconHook() {
-        val method = members.oplusHeader?.applyExpandedCanvasIconWithBadge ?: return
-        hooks.install(method, "systemui.panel.header.applyExpandedCanvasIconWithBadge") { chain ->
-            val result = chain.proceed()
-            chain.thisObject?.let { wrapper ->
-                runCatching {
-                    val row = members.notificationViewWrapperRow.get(wrapper) ?: return@runCatching
-                    val sbn = statusBarNotificationFromRow(row) ?: return@runCatching
-                    val icon = members.headerGetIcon?.invoke(wrapper) as? ImageView
-                        ?: return@runCatching
-                    scheduleHostAvatarCompletion(icon, row, sbn, configuration.snapshot)
-                }
-            }
-            result
-        }
-    }
-
-    private fun scheduleHostAvatarCompletion(
-        iconView: ImageView,
-        row: Any,
-        sbn: StatusBarNotification,
-        snapshot: RuntimeSnapshot,
-    ) {
-        if (members.drawableWithBadgeCtor == null || members.drawableWithBadgeSetBadge == null) {
-            diagnostics.memberMissing(
-                scope = "panel:avatar_completion_members",
-                message = "未找到宿主 DrawableWithBadge 合成类，跳过头像+角标补齐",
-            )
-            return
-        }
-        if (applyHostAvatarCompletion(iconView, row, sbn, snapshot)) return
-        iconView.postDelayed(
-            { if (configuration.isCurrent(snapshot)) applyHostAvatarCompletion(iconView, row, sbn, snapshot) },
-            AVATAR_COMPLETION_RETRY_SHORT_MILLIS,
-        )
-        iconView.postDelayed(
-            { if (configuration.isCurrent(snapshot)) applyHostAvatarCompletion(iconView, row, sbn, snapshot) },
-            AVATAR_COMPLETION_RETRY_LONG_MILLIS,
-        )
-    }
-
-    /** @return true when nothing more has to be done for this row (done, impossible or failed). */
-    private fun applyHostAvatarCompletion(
-        iconView: ImageView,
-        row: Any,
-        sbn: StatusBarNotification,
-        snapshot: RuntimeSnapshot,
-    ): Boolean {
-        val packageName = sbn.packageName
-        try {
-            // Only rows the host would have avatar-composed are completed; every other row keeps
-            // its own themed app icon from the resolver hook.
-            if (!snapshot.resolver.shouldYieldToHostAvatar(iconView.context, packageName)) return true
-            val current = iconView.drawable
-            val avatar = loadMessagingAvatar(row, iconView.context, sbn)
-            if (avatar == null) {
-                diagnostics.report(
-                    level = DiagnosticLevel.Warning,
-                    event = DiagnosticEvent.PackageIconResolved,
-                    message = "角标诊断：$packageName 会话头像读取为空，保留 ColorOS 原图标" +
-                        "（当前绘制=${current?.javaClass?.name}）",
-                    attributes = mapOf("package" to packageName),
-                    occurrence = OccurrencePolicy.Once("avatar_completion_no_avatar:$packageName"),
-                )
-                return true
-            }
-            val badge = snapshot.resolver.resolvePanelThemeDrawable(iconView.context, sbn)
-            if (badge == null) {
-                diagnostics.report(
-                    level = DiagnosticLevel.Warning,
-                    event = DiagnosticEvent.PackageIconResolved,
-                    message = "角标诊断：$packageName 头像补齐时主题角标解析失败，保留 ColorOS 原图标",
-                    attributes = mapOf("package" to packageName),
-                    occurrence = OccurrencePolicy.Once("avatar_completion_badge_missing:$packageName"),
-                )
-                return true
-            }
-            // Compose with the host's own final composite type; the createBackgroundWithAppIcon
-            // route is avoided on purpose (its internal rasterization crashes on foreign sizes).
-            val composite = members.drawableWithBadgeCtor?.newInstance(
-                rasterizeAvatar(avatar, iconView.context),
-            ) as? Drawable
-            if (composite == null) {
-                diagnostics.report(
-                    level = DiagnosticLevel.Warning,
-                    event = DiagnosticEvent.PackageIconResolved,
-                    message = "角标诊断：$packageName 宿主 DrawableWithBadge 构造失败，保留 ColorOS 原图标",
-                    attributes = mapOf("package" to packageName),
-                    occurrence = OccurrencePolicy.Once("avatar_completion_factory_empty:$packageName"),
-                )
-                return true
-            }
-            members.drawableWithBadgeSetBadge?.invoke(composite, badge)
-            runCatching { members.drawableWithBadgeRelayout?.invoke(composite) }
-            if (!configuration.isCurrent(snapshot)) return true
-            iconView.background = null
-            iconView.foreground = null
-            iconView.imageTintList = null
-            iconView.clearColorFilter()
-            iconView.setImageDrawable(composite)
-            diagnostics.report(
-                level = DiagnosticLevel.Info,
-                event = DiagnosticEvent.PackageIconResolved,
-                message = "角标诊断：$packageName 已补齐会话头像+角标合成（此前绘制=${current?.javaClass?.name}）",
-                attributes = mapOf("package" to packageName),
-                occurrence = OccurrencePolicy.Once("avatar_completion:$packageName"),
-            )
-            return true
-        } catch (exception: Exception) {
-            diagnostics.runtimeFailure(
-                scope = "panel:avatar_completion",
-                message = "会话头像补齐失败，保留 ColorOS 原结果",
-                cause = exception,
-                revision = snapshot.revision,
-            )
-            return true
-        }
-    }
-
-    /**
-     * DrawableWithBadge draws the base as-is, so the avatar is pre-rounded here — the same visual
-     * the host's getRoundRectDrawable produced before it proved unstable for foreign sizes.
-     */
-    private fun rasterizeAvatar(avatar: Drawable, context: Context): Drawable {
-        return try {
-            val size = 192
-            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            canvas.clipPath(
-                Path().apply { addCircle(size / 2f, size / 2f, size / 2f, Path.Direction.CW) },
-            )
-            avatar.setBounds(0, 0, size, size)
-            avatar.draw(canvas)
-            BitmapDrawable(context.resources, bitmap)
-        } catch (_: Throwable) {
-            avatar
-        }
-    }
-
-    /**
-     * Avatar source chain: the host helper the aggregated card uses first, then the notification's
-     * own large icon — both are what ColorOS itself would have shown, so the completed row matches
-     * its neighbours.
-     */
-    private fun loadMessagingAvatar(row: Any, context: Context, sbn: StatusBarNotification): Drawable? {
-        val hostAvatar = loadHostMessagingAvatar(row, context)
-        if (hostAvatar != null) return hostAvatar
-        // Notification.largeIcon is the deprecated Bitmap field; the Icon-based getter is
-        // getLargeIcon(), which is what can be loaded through Icon.loadDrawable here.
-        return runCatching { sbn.notification.getLargeIcon()?.loadDrawable(context) }.getOrNull()
-    }
-
-    private fun loadHostMessagingAvatar(row: Any, context: Context): Drawable? {
-        val loader = members.messagingAvatarLoader ?: return null
-        val entry = members.expandableRowGetEntry.invoke(row) ?: return null
-        val host = members.messagingAvatarInstance
-        return try {
-            if (host == null) {
-                loader.invoke(null, context, entry) as? Drawable
-            } else {
-                loader.invoke(host, context, entry) as? Drawable
-            }
-        } catch (_: Throwable) {
-            null
-        }
     }
 }

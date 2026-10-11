@@ -10,7 +10,6 @@ import android.widget.ImageView
 import com.fankes.coloros.notify.diagnostics.Diagnostics
 import com.fankes.coloros.notify.hook.memberMissing
 import com.fankes.coloros.notify.hook.reflect.Reflection
-import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.Enumeration
@@ -35,7 +34,6 @@ internal data class OplusHeaderMembers(
     val getBase: Method,
     val updateIconColor: Method?,
     val updateIconRoundness: Method?,
-    val applyExpandedCanvasIconWithBadge: Method?,
 )
 
 internal data class PanelMembers(
@@ -65,22 +63,6 @@ internal data class PanelMembers(
     val rowGetPublicLayout: Method?,
     /** `ExpandableNotificationRow.setHideSensitive(...)` — fires when the switch flips. */
     val rowSetHideSensitive: Method?,
-    /**
-     * `CapsuleNotificationUtils.INSTANCE.tryLoadMessagingAvatar(Context, NotificationEntry)` — the
-     * exact avatar source the aggregated lock-screen card uses, so completed rows match it.
-     */
-    val messagingAvatarLoader: Method?,
-    val messagingAvatarInstance: Any?,
-    /**
-     * `DrawableWithBadge(Drawable)` + `setBadge(Drawable)` — the host's final composite type. The
-     * module builds the avatar+badge composite directly with it instead of going through
-     * `createBackgroundWithAppIcon`, whose internal `getRoundRectDrawable` rasterization crashes
-     * on drawables it did not size itself.
-     */
-    val drawableWithBadgeCtor: Constructor<*>?,
-    val drawableWithBadgeSetBadge: Method?,
-    /** `DrawableWithBadge.relayoutIfHasBounds()` — recompute badge geometry after setBadge. */
-    val drawableWithBadgeRelayout: Method?,
 )
 
 internal data class PackageIconResolverMembers(
@@ -331,53 +313,6 @@ internal object SystemUiMembers {
             )
         }
 
-        // Host helpers for completing rows where ColorOS falls back to the plain app icon because
-        // its people-avatar channel has no entry for the sender: the aggregated lock-screen card
-        // reads the avatar straight from the MessagingStyle instead, so those two let the module
-        // rebuild the very same avatar+badge composite for the rows the header path left behind.
-        val capsuleUtils = loadOptional(
-            "com.oplus.systemui.notification.lockscreen.notification.CapsuleNotificationUtils",
-            classLoader,
-        )
-        val messagingAvatarLoader = capsuleUtils?.let { utils ->
-            Reflection.findMethodReturning(
-                utils,
-                "tryLoadMessagingAvatar",
-                Drawable::class.java,
-                Context::class.java,
-                notificationEntry,
-            )
-        }
-        val messagingAvatarInstance = messagingAvatarLoader?.let { method ->
-            if (java.lang.reflect.Modifier.isStatic(method.modifiers)) {
-                null
-            } else {
-                capsuleUtils.declaredFields
-                    .firstOrNull { it.name == "INSTANCE" }
-                    ?.apply { isAccessible = true }
-                    ?.get(null)
-            }
-        }
-        val drawableWithBadgeClass = loadOptional(
-            "com.oplus.systemui.notification.utlils.DrawableWithBadge",
-            classLoader,
-        )
-        val drawableWithBadgeCtor = drawableWithBadgeClass?.let { clazz ->
-            runCatching {
-                clazz.getConstructor(Drawable::class.java).apply { isAccessible = true }
-            }.getOrNull()
-        }
-        val drawableWithBadgeSetBadge = drawableWithBadgeClass?.let { clazz ->
-            clazz.declaredMethods.firstOrNull {
-                it.name == "setBadge" && it.parameterTypes.size == 1
-            }?.apply { isAccessible = true }
-        }
-        val drawableWithBadgeRelayout = drawableWithBadgeClass?.let { clazz ->
-            runCatching {
-                clazz.getMethod("relayoutIfHasBounds").apply { isAccessible = true }
-            }.getOrNull()
-        }
-
         val headerWrapper = classes.optional(NOTIFICATION_HEADER_WRAPPER)
         val headerOnContentUpdated = headerWrapper?.let {
             Reflection.findMethodReturning(it, "onContentUpdated", Void.TYPE, expandableRow)
@@ -553,18 +488,6 @@ internal object SystemUiMembers {
                 Void.TYPE,
                 Boolean::class.javaPrimitiveType!!,
             )
-            // The host's final icon setter for the header row: the async avatar+badge composition
-            // funnels through here (setImageDrawable + badge cache). Completing avatar-less rows
-            // right after it is race-free, unlike timed retries.
-            val applyExpandedCanvasIconWithBadge = Reflection.findMethodReturning(
-                extension,
-                "applyExpandedCanvasIconWithBadge",
-                Void.TYPE,
-                Drawable::class.java,
-                Int::class.javaPrimitiveType!!,
-                Int::class.javaPrimitiveType!!,
-                String::class.java,
-            )
             if (getBase == null) {
                 diagnostics.memberMissing(
                     scope = "systemui:panel:oplus_header",
@@ -584,7 +507,7 @@ internal object SystemUiMembers {
                         message = "未找到 updateIconRoundness(boolean)，跳过异步圆角覆盖修复",
                     )
                 }
-                OplusHeaderMembers(getBase, updateIconColor, updateIconRoundness, applyExpandedCanvasIconWithBadge)
+                OplusHeaderMembers(getBase, updateIconColor, updateIconRoundness)
             }
         }
 
@@ -611,11 +534,6 @@ internal object SystemUiMembers {
             rowShouldShowPublic = rowShouldShowPublic,
             rowGetPublicLayout = rowGetPublicLayout,
             rowSetHideSensitive = rowSetHideSensitive,
-            messagingAvatarLoader = messagingAvatarLoader,
-            messagingAvatarInstance = messagingAvatarInstance,
-            drawableWithBadgeCtor = drawableWithBadgeCtor,
-            drawableWithBadgeSetBadge = drawableWithBadgeSetBadge,
-            drawableWithBadgeRelayout = drawableWithBadgeRelayout,
             packageIconResolver = resolvePackageIconResolver(classLoader, diagnostics),
         )
     }
