@@ -181,7 +181,7 @@ internal class NotificationIconResolver(
             sbn,
             IconSurface.Panel,
             OriginalIconCompatibility.Unchecked,
-        )
+        )?.takeUnless { it is IconReplacement.Placeholder }
         forcedReplacement?.toPanelIconRenderPlanOrNull(context, "panel")?.let { return it }
 
         val originalDrawable = originalSmallIcon?.loadDrawable(context)?.mutate() ?: return null
@@ -191,7 +191,7 @@ internal class NotificationIconResolver(
                 sbn,
                 IconSurface.Panel,
                 originalCompatibility.toPolicyCompatibility(),
-            )
+            )?.takeUnless { it is IconReplacement.Placeholder }
                 ?.toPanelIconRenderPlanOrNull(context, "panel")
                 ?.let { return it }
         }
