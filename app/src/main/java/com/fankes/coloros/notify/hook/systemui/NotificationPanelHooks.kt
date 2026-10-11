@@ -1,7 +1,6 @@
 package com.fankes.coloros.notify.hook.systemui
 
 import android.annotation.SuppressLint
-import android.app.Notification
 import android.content.Context
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
@@ -844,13 +843,12 @@ internal class NotificationPanelHooks(
 
     /**
      * Avatar source chain: the host helper the aggregated card uses first, then the notification's
-     * own large icon, then the MessagingStyle sender person — every one of them is what ColorOS
-     * itself would have shown, so the completed row matches its neighbours.
+     * own large icon — both are what ColorOS itself would have shown, so the completed row matches
+     * its neighbours.
      */
     private fun loadMessagingAvatar(row: Any, context: Context, sbn: StatusBarNotification): Drawable? {
         loadHostMessagingAvatar(row, context)?.let { return it }
-        runCatching { sbn.notification.largeIcon?.loadDrawable(context) }.getOrNull()?.let { return it }
-        return loadMessagingStyleSenderAvatar(sbn, context)
+        return runCatching { sbn.notification.largeIcon?.loadDrawable(context) }.getOrNull()
     }
 
     private fun loadHostMessagingAvatar(row: Any, context: Context): Drawable? {
@@ -866,14 +864,5 @@ internal class NotificationPanelHooks(
         } catch (_: Throwable) {
             null
         }
-    }
-
-    private fun loadMessagingStyleSenderAvatar(sbn: StatusBarNotification, context: Context): Drawable? = try {
-        val style = Notification.MessagingStyle
-            .extractMessagingStyleFromNotification(sbn.notification) ?: return null
-        val person = style.messages.lastOrNull { it.senderPerson?.icon != null }?.senderPerson
-        person?.icon?.loadDrawable(context)
-    } catch (_: Throwable) {
-        null
     }
 }
