@@ -1,6 +1,7 @@
 package com.fankes.coloros.notify.hook.systemui
 
 import android.annotation.SuppressLint
+import android.app.Notification
 import android.content.Context
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
@@ -18,6 +19,8 @@ import com.fankes.coloros.notify.hook.HookRegistrar
 import com.fankes.coloros.notify.hook.icon.NotificationIconResolver
 import com.fankes.coloros.notify.hook.runtimeFailure
 import java.lang.reflect.Method
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 internal class NotificationPanelHooks(
@@ -28,6 +31,9 @@ internal class NotificationPanelHooks(
 ) {
     private val systemUiIdCache = ConcurrentHashMap<String, Int>()
     private val headerIconClaims = HeaderIconClaimRegistry<ImageView, Drawable>()
+
+    /** Rows this module already completed with an avatar+badge composite (weak, per view). */
+    private val completedAvatarViews = Collections.newSetFromMap(WeakHashMap<ImageView, Boolean>())
 
     fun install() {
         installOplusHeaderHooks()
@@ -727,9 +733,8 @@ internal class NotificationPanelHooks(
      * host left behind: load the avatar from the very same helper the card uses and rebuild the
      * composite with the host's own factory, so size, radius and badge placement stay stock.
      *
-     * The host paints its composite asynchronously, so the attempt is retried; a row that already
-     * carries a host composite (or one built here — both are the host's DrawableWithBadge) is
-     * left alone.
+     * The host paints its composite asynchronously, so the attempt is retried; once a composite
+     * has been placed on a view it is not re-composed.
      */
     private fun scheduleHostAvatarCompletion(
         iconView: ImageView,
@@ -737,7 +742,13 @@ internal class NotificationPanelHooks(
         sbn: StatusBarNotification,
         snapshot: RuntimeSnapshot,
     ) {
-        if (members.messagingAvatarLoader == null || members.backgroundWithAppIconFactory == null) return
+        if (members.messagingAvatarLoader == null || members.backgroundWithAppIconFactory == null) {
+            diagnostics.memberMissing(
+                scope = "panel:avatar_completion_members",
+                message = "未找到宿主会话头像加载器/合成器，跳过头像+角标补齐",
+            )
+            return
+        }
         if (applyHostAvatarCompletion(iconView, row, sbn, snapshot)) return
         iconView.postDelayed(
             { if (configuration.isCurrent(snapshot)) applyHostAvatarCompletion(iconView, row, sbn, snapshot) },
@@ -761,11 +772,31 @@ internal class NotificationPanelHooks(
             // Only rows the host would have avatar-composed are completed; every other row keeps
             // its own themed app icon from the resolver hook.
             if (!snapshot.resolver.shouldYieldToHostAvatar(iconView.context, packageName)) return true
+            if (completedAvatarViews.contains(iconView)) return true
             val current = iconView.drawable
-            // The host's composite (and ours, built by the same factory) is DrawableWithBadge.
-            if (current?.javaClass?.name?.endsWith("DrawableWithBadge") == true) return true
-            val avatar = loadMessagingAvatar(row, iconView.context) ?: return false
-            val badge = snapshot.resolver.resolvePanelThemeDrawable(iconView.context, sbn) ?: return false
+            val avatar = loadMessagingAvatar(row, iconView.context, sbn)
+            if (avatar == null) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Warning,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "角标诊断：$packageName 会话头像读取为空，保留 ColorOS 原图标" +
+                        "（当前绘制=${current?.javaClass?.name}）",
+                    attributes = mapOf("package" to packageName),
+                    occurrence = OccurrencePolicy.Once("avatar_completion_no_avatar:$packageName"),
+                )
+                return true
+            }
+            val badge = snapshot.resolver.resolvePanelThemeDrawable(iconView.context, sbn)
+            if (badge == null) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Warning,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "角标诊断：$packageName 头像补齐时主题角标解析失败，保留 ColorOS 原图标",
+                    attributes = mapOf("package" to packageName),
+                    occurrence = OccurrencePolicy.Once("avatar_completion_badge_missing:$packageName"),
+                )
+                return true
+            }
             val composite = members.backgroundWithAppIconFactory?.invoke(
                 null,
                 iconView.context,
@@ -773,19 +804,28 @@ internal class NotificationPanelHooks(
                 badge,
                 packageName,
                 sbn.userId,
-            ) as? Drawable ?: return false
+            ) as? Drawable
+            if (composite == null) {
+                diagnostics.report(
+                    level = DiagnosticLevel.Warning,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "角标诊断：$packageName 宿主合成器未返回头像+角标结果，保留 ColorOS 原图标",
+                    attributes = mapOf("package" to packageName),
+                    occurrence = OccurrencePolicy.Once("avatar_completion_factory_empty:$packageName"),
+                )
+                return true
+            }
             if (!configuration.isCurrent(snapshot)) return true
-            // The host may have finished its own composite while the avatar was loading.
-            if (iconView.drawable?.javaClass?.name?.endsWith("DrawableWithBadge") == true) return true
             iconView.background = null
             iconView.foreground = null
             iconView.imageTintList = null
             iconView.clearColorFilter()
             iconView.setImageDrawable(composite)
+            completedAvatarViews.add(iconView)
             diagnostics.report(
                 level = DiagnosticLevel.Info,
                 event = DiagnosticEvent.PackageIconResolved,
-                message = "角标诊断：$packageName 已补齐会话头像+角标合成（宿主头像通道缺失）",
+                message = "角标诊断：$packageName 已补齐会话头像+角标合成（此前绘制=${current?.javaClass?.name}）",
                 attributes = mapOf("package" to packageName),
                 occurrence = OccurrencePolicy.Once("avatar_completion:$packageName"),
             )
@@ -801,14 +841,38 @@ internal class NotificationPanelHooks(
         }
     }
 
-    private fun loadMessagingAvatar(row: Any, context: Context): Drawable? {
+    /**
+     * Avatar source chain: the host helper the aggregated card uses first, then the notification's
+     * own large icon, then the MessagingStyle sender person — every one of them is what ColorOS
+     * itself would have shown, so the completed row matches its neighbours.
+     */
+    private fun loadMessagingAvatar(row: Any, context: Context, sbn: StatusBarNotification): Drawable? {
+        loadHostMessagingAvatar(row, context)?.let { return it }
+        runCatching { sbn.notification.largeIcon?.loadDrawable(context) }.getOrNull()?.let { return it }
+        return loadMessagingStyleSenderAvatar(sbn, context)
+    }
+
+    private fun loadHostMessagingAvatar(row: Any, context: Context): Drawable? {
         val loader = members.messagingAvatarLoader ?: return null
         val entry = members.expandableRowGetEntry.invoke(row) ?: return null
         val host = members.messagingAvatarInstance
-        return if (host == null) {
-            loader.invoke(null, context, entry) as? Drawable
-        } else {
-            loader.invoke(host, context, entry) as? Drawable
+        return try {
+            if (host == null) {
+                loader.invoke(null, context, entry) as? Drawable
+            } else {
+                loader.invoke(host, context, entry) as? Drawable
+            }
+        } catch (_: Throwable) {
+            null
         }
+    }
+
+    private fun loadMessagingStyleSenderAvatar(sbn: StatusBarNotification, context: Context): Drawable? = try {
+        val style = Notification.MessagingStyle
+            .extractMessagingStyleFromNotification(sbn.notification) ?: return null
+        val person = style.messages.lastOrNull { it.senderPerson?.icon != null }?.senderPerson
+        person?.icon?.loadDrawable(context)
+    } catch (_: Throwable) {
+        null
     }
 }
