@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
+import android.graphics.Path
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.service.notification.StatusBarNotification
@@ -745,10 +746,10 @@ internal class NotificationPanelHooks(
         sbn: StatusBarNotification,
         snapshot: RuntimeSnapshot,
     ) {
-        if (members.messagingAvatarLoader == null || members.backgroundWithAppIconFactory == null) {
+        if (members.drawableWithBadgeCtor == null || members.drawableWithBadgeSetBadge == null) {
             diagnostics.memberMissing(
                 scope = "panel:avatar_completion_members",
-                message = "未找到宿主会话头像加载器/合成器，跳过头像+角标补齐",
+                message = "未找到宿主 DrawableWithBadge 合成类，跳过头像+角标补齐",
             )
             return
         }
@@ -800,24 +801,23 @@ internal class NotificationPanelHooks(
                 )
                 return true
             }
-            val composite = members.backgroundWithAppIconFactory?.invoke(
-                null,
-                iconView.context,
+            // Compose with the host's own final composite type; the createBackgroundWithAppIcon
+            // route is avoided on purpose (its internal rasterization crashes on foreign sizes).
+            val composite = members.drawableWithBadgeCtor?.newInstance(
                 rasterizeAvatar(avatar, iconView.context),
-                badge,
-                packageName,
-                sbn.userId,
             ) as? Drawable
             if (composite == null) {
                 diagnostics.report(
                     level = DiagnosticLevel.Warning,
                     event = DiagnosticEvent.PackageIconResolved,
-                    message = "角标诊断：$packageName 宿主合成器未返回头像+角标结果，保留 ColorOS 原图标",
+                    message = "角标诊断：$packageName 宿主 DrawableWithBadge 构造失败，保留 ColorOS 原图标",
                     attributes = mapOf("package" to packageName),
                     occurrence = OccurrencePolicy.Once("avatar_completion_factory_empty:$packageName"),
                 )
                 return true
             }
+            members.drawableWithBadgeSetBadge?.invoke(composite, badge)
+            runCatching { members.drawableWithBadgeRelayout?.invoke(composite) }
             if (!configuration.isCurrent(snapshot)) return true
             iconView.background = null
             iconView.foreground = null
@@ -845,16 +845,17 @@ internal class NotificationPanelHooks(
     }
 
     /**
-     * The host factory rasterizes and rescales the base drawable's own bitmap; symbol avatars,
-     * huge contact photos and not-yet-laid-out icons make that internal rescale produce a zero
-     * size ("width and height must be > 0"). Always hand it a clean 192×192 bitmap — the exact
-     * size of the host's own successful composites.
+     * DrawableWithBadge draws the base as-is, so the avatar is pre-rounded here — the same visual
+     * the host's getRoundRectDrawable produced before it proved unstable for foreign sizes.
      */
     private fun rasterizeAvatar(avatar: Drawable, context: Context): Drawable {
         return try {
             val size = 192
             val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
             val canvas = Canvas(bitmap)
+            canvas.clipPath(
+                Path().apply { addCircle(size / 2f, size / 2f, size / 2f, Path.Direction.CW) },
+            )
             avatar.setBounds(0, 0, size, size)
             avatar.draw(canvas)
             BitmapDrawable(context.resources, bitmap)

@@ -10,6 +10,7 @@ import android.widget.ImageView
 import com.fankes.coloros.notify.diagnostics.Diagnostics
 import com.fankes.coloros.notify.hook.memberMissing
 import com.fankes.coloros.notify.hook.reflect.Reflection
+import java.lang.reflect.Constructor
 import java.lang.reflect.Field
 import java.lang.reflect.Method
 import java.util.Enumeration
@@ -70,10 +71,15 @@ internal data class PanelMembers(
     val messagingAvatarLoader: Method?,
     val messagingAvatarInstance: Any?,
     /**
-     * `LayerDrawableWithAppIconKt.createBackgroundWithAppIcon(Context, base, badge, pkg, userId)` —
-     * the host's own avatar+badge composer, reused so completed rows keep the stock look.
+     * `DrawableWithBadge(Drawable)` + `setBadge(Drawable)` — the host's final composite type. The
+     * module builds the avatar+badge composite directly with it instead of going through
+     * `createBackgroundWithAppIcon`, whose internal `getRoundRectDrawable` rasterization crashes
+     * on drawables it did not size itself.
      */
-    val backgroundWithAppIconFactory: Method?,
+    val drawableWithBadgeCtor: Constructor<*>?,
+    val drawableWithBadgeSetBadge: Method?,
+    /** `DrawableWithBadge.relayoutIfHasBounds()` — recompute badge geometry after setBadge. */
+    val drawableWithBadgeRelayout: Method?,
 )
 
 internal data class PackageIconResolverMembers(
@@ -351,20 +357,24 @@ internal object SystemUiMembers {
                     ?.get(null)
             }
         }
-        val backgroundWithAppIconFactory = loadOptional(
-            "com.oplus.systemui.notification.row.wrapper.LayerDrawableWithAppIconKt",
+        val drawableWithBadgeClass = loadOptional(
+            "com.oplus.systemui.notification.utlils.DrawableWithBadge",
             classLoader,
-        )?.let { factory ->
-            Reflection.findMethodReturning(
-                factory,
-                "createBackgroundWithAppIcon",
-                Drawable::class.java,
-                Context::class.java,
-                Drawable::class.java,
-                Drawable::class.java,
-                String::class.java,
-                java.lang.Integer::class.java,
-            )
+        )
+        val drawableWithBadgeCtor = drawableWithBadgeClass?.let { clazz ->
+            runCatching {
+                clazz.getConstructor(Drawable::class.java).apply { isAccessible = true }
+            }.getOrNull()
+        }
+        val drawableWithBadgeSetBadge = drawableWithBadgeClass?.let { clazz ->
+            clazz.declaredMethods.firstOrNull {
+                it.name == "setBadge" && it.parameterTypes.size == 1
+            }?.apply { isAccessible = true }
+        }
+        val drawableWithBadgeRelayout = drawableWithBadgeClass?.let { clazz ->
+            runCatching {
+                clazz.getMethod("relayoutIfHasBounds").apply { isAccessible = true }
+            }.getOrNull()
         }
 
         val headerWrapper = classes.optional(NOTIFICATION_HEADER_WRAPPER)
@@ -590,7 +600,9 @@ internal object SystemUiMembers {
             rowSetHideSensitive = rowSetHideSensitive,
             messagingAvatarLoader = messagingAvatarLoader,
             messagingAvatarInstance = messagingAvatarInstance,
-            backgroundWithAppIconFactory = backgroundWithAppIconFactory,
+            drawableWithBadgeCtor = drawableWithBadgeCtor,
+            drawableWithBadgeSetBadge = drawableWithBadgeSetBadge,
+            drawableWithBadgeRelayout = drawableWithBadgeRelayout,
             packageIconResolver = resolvePackageIconResolver(classLoader, diagnostics),
         )
     }
