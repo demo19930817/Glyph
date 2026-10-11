@@ -35,6 +35,7 @@ internal data class OplusHeaderMembers(
     val getBase: Method,
     val updateIconColor: Method?,
     val updateIconRoundness: Method?,
+    val applyExpandedCanvasIconWithBadge: Method?,
 )
 
 internal data class PanelMembers(
@@ -552,6 +553,18 @@ internal object SystemUiMembers {
                 Void.TYPE,
                 Boolean::class.javaPrimitiveType!!,
             )
+            // The host's final icon setter for the header row: the async avatar+badge composition
+            // funnels through here (setImageDrawable + badge cache). Completing avatar-less rows
+            // right after it is race-free, unlike timed retries.
+            val applyExpandedCanvasIconWithBadge = Reflection.findMethodReturning(
+                extension,
+                "applyExpandedCanvasIconWithBadge",
+                Void.TYPE,
+                Drawable::class.java,
+                Int::class.javaPrimitiveType!!,
+                Int::class.javaPrimitiveType!!,
+                String::class.java,
+            )
             if (getBase == null) {
                 diagnostics.memberMissing(
                     scope = "systemui:panel:oplus_header",
@@ -571,7 +584,7 @@ internal object SystemUiMembers {
                         message = "未找到 updateIconRoundness(boolean)，跳过异步圆角覆盖修复",
                     )
                 }
-                OplusHeaderMembers(getBase, updateIconColor, updateIconRoundness)
+                OplusHeaderMembers(getBase, updateIconColor, updateIconRoundness, applyExpandedCanvasIconWithBadge)
             }
         }
 

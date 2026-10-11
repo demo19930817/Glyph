@@ -23,8 +23,6 @@ import com.fankes.coloros.notify.hook.icon.NotificationIconResolver
 import com.fankes.coloros.notify.hook.memberMissing
 import com.fankes.coloros.notify.hook.runtimeFailure
 import java.lang.reflect.Method
-import java.util.Collections
-import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 internal class NotificationPanelHooks(
@@ -36,15 +34,13 @@ internal class NotificationPanelHooks(
     private val systemUiIdCache = ConcurrentHashMap<String, Int>()
     private val headerIconClaims = HeaderIconClaimRegistry<ImageView, Drawable>()
 
-    /** Rows this module already completed with an avatar+badge composite (weak, per view). */
-    private val completedAvatarViews = Collections.newSetFromMap(WeakHashMap<ImageView, Boolean>())
-
     fun install() {
         installOplusHeaderHooks()
         installGroupIconManagerHooks()
         installPackageIconResolverHooks()
         installPackageIconByNameHooks()
         installHiddenContentHooks()
+        installExpandedCanvasIconHook()
         members.headerOnContentUpdated?.let { method ->
             hooks.install(method, "systemui.panel.header.onContentUpdated") { chain ->
                 val result = chain.proceed()
@@ -740,6 +736,29 @@ internal class NotificationPanelHooks(
      * The host paints its composite asynchronously, so the attempt is retried; once a composite
      * has been placed on a view it is not re-composed.
      */
+    /**
+     * `applyExpandedCanvasIconWithBadge` is the host's FINAL icon setter for the header row: the
+     * async avatar+badge composition funnels through it. Completing avatar-less rows right after
+     * this call is race-free — timed retries alone kept losing to the host's own late write, which
+     * is why the completion ran but never stuck.
+     */
+    private fun installExpandedCanvasIconHook() {
+        val method = members.oplusHeader?.applyExpandedCanvasIconWithBadge ?: return
+        hooks.install(method, "systemui.panel.header.applyExpandedCanvasIconWithBadge") { chain ->
+            val result = chain.proceed()
+            chain.thisObject?.let { wrapper ->
+                runCatching {
+                    val row = members.notificationViewWrapperRow.get(wrapper) ?: return@runCatching
+                    val sbn = statusBarNotificationFromRow(row) ?: return@runCatching
+                    val icon = members.headerGetIcon?.invoke(wrapper) as? ImageView
+                        ?: return@runCatching
+                    scheduleHostAvatarCompletion(icon, row, sbn, configuration.snapshot)
+                }
+            }
+            result
+        }
+    }
+
     private fun scheduleHostAvatarCompletion(
         iconView: ImageView,
         row: Any,
@@ -776,7 +795,6 @@ internal class NotificationPanelHooks(
             // Only rows the host would have avatar-composed are completed; every other row keeps
             // its own themed app icon from the resolver hook.
             if (!snapshot.resolver.shouldYieldToHostAvatar(iconView.context, packageName)) return true
-            if (completedAvatarViews.contains(iconView)) return true
             val current = iconView.drawable
             val avatar = loadMessagingAvatar(row, iconView.context, sbn)
             if (avatar == null) {
@@ -824,7 +842,6 @@ internal class NotificationPanelHooks(
             iconView.imageTintList = null
             iconView.clearColorFilter()
             iconView.setImageDrawable(composite)
-            completedAvatarViews.add(iconView)
             diagnostics.report(
                 level = DiagnosticLevel.Info,
                 event = DiagnosticEvent.PackageIconResolved,
