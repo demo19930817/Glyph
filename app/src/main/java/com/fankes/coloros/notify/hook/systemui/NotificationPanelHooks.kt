@@ -54,8 +54,24 @@ internal class NotificationPanelHooks(
         members.headerSetIsChildInGroup?.let { method ->
             hooks.install(method, "systemui.panel.header.setIsChildInGroup") { chain ->
                 val result = chain.proceed()
-                if (chain.args.firstOrNull() == false) {
-                    chain.thisObject?.let(::applyPanelIcon)
+                // Both directions repaint the header. Leaving the group (false) needs the outline
+                // restored; entering the group (true) — the moment a second notification of the
+                // same app arrives — hands the row to the host's native small-icon composition, and
+                // the previous row kept that raw look forever when no content update followed (the
+                // weather "special focus" alert grouped under a newer weather post). Re-apply now
+                // and once more after a short delay, because the host can compose asynchronously.
+                chain.thisObject?.let { wrapper ->
+                    applyPanelIcon(wrapper)
+                    if (chain.args.firstOrNull() == true) {
+                        runCatching { members.notificationViewWrapperRow.get(wrapper) }.getOrNull()
+                            ?.let { row ->
+                                val snapshot = configuration.snapshot
+                                (row as? View)?.postDelayed(
+                                    { if (configuration.isCurrent(snapshot)) applyPanelIcon(wrapper) },
+                                    PANEL_RETRY_DELAY_MILLIS,
+                                )
+                            }
+                    }
                 }
                 result
             }
@@ -134,7 +150,7 @@ internal class NotificationPanelHooks(
                         {
                             if (configuration.isCurrent(snapshot)) applyHiddenContentIcon(row)
                         },
-                        HIDDEN_CONTENT_RETRY_DELAY_MILLIS,
+                        PANEL_RETRY_DELAY_MILLIS,
                     )
                 }
             }
@@ -706,6 +722,6 @@ internal class NotificationPanelHooks(
     }
 
     private companion object {
-        const val HIDDEN_CONTENT_RETRY_DELAY_MILLIS = 256L
+        const val PANEL_RETRY_DELAY_MILLIS = 256L
     }
 }
