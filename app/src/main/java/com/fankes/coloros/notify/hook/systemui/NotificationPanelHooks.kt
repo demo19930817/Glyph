@@ -2,8 +2,11 @@ package com.fankes.coloros.notify.hook.systemui
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.Canvas
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffColorFilter
+import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.service.notification.StatusBarNotification
 import android.view.View
@@ -800,7 +803,7 @@ internal class NotificationPanelHooks(
             val composite = members.backgroundWithAppIconFactory?.invoke(
                 null,
                 iconView.context,
-                avatar,
+                normalizeAvatarBounds(avatar, iconView.context),
                 badge,
                 packageName,
                 sbn.userId,
@@ -838,6 +841,25 @@ internal class NotificationPanelHooks(
                 revision = snapshot.revision,
             )
             return true
+        }
+    }
+
+    /**
+     * The host factory rasterizes the base drawable at its intrinsic size; symbol avatars and
+     * not-yet-laid-out icons report 0/-1 and crash Bitmap.createBitmap inside
+     * getRoundRectDrawable ("width and height must be > 0"). Normalize those to a square bitmap.
+     */
+    private fun normalizeAvatarBounds(avatar: Drawable, context: Context): Drawable {
+        if (avatar.intrinsicWidth > 0 && avatar.intrinsicHeight > 0) return avatar
+        return try {
+            val size = 192
+            val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            val canvas = Canvas(bitmap)
+            avatar.setBounds(0, 0, size, size)
+            avatar.draw(canvas)
+            BitmapDrawable(context.resources, bitmap)
+        } catch (_: Throwable) {
+            avatar
         }
     }
 
