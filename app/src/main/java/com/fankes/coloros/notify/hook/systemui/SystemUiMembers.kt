@@ -61,8 +61,10 @@ internal data class PanelMembers(
 
 internal data class PackageIconResolverMembers(
     val getPackageIconForNotification: Method,
-    val getPackageIcon: Method?,
-    val getHeaderIconBadgeDrawable: Method?,
+    /** Every `getPackageIcon(...)` overload — vendors add or drop parameters per release. */
+    val packageIconMethods: List<Method>,
+    /** Every `getHeaderIconBadgeDrawable(...)` overload. */
+    val headerBadgeMethods: List<Method>,
     val getContext: Method?,
 )
 
@@ -551,15 +553,18 @@ internal object SystemUiMembers {
         val contextGetter = Reflection.findAnyMethod(resolverClass, "getContext", Context::class.java)
             ?.also { it.isAccessible = true }
         // "Hide notification content" makes the lock-screen hero skip the notification-scoped entry
-        // and ask for the app icon by package, so those lookups are hooked as well.
+        // and ask for the app icon by package, so those lookups are hooked as well. Both are taken
+        // as *all* overloads: on this build one caller passes the bare package and another the
+        // notification key, and hooking a single signature only ever covered one of them.
+        val headerBadgeMethods = Reflection.findAllMethods(
+            resolverClass,
+            "getHeaderIconBadgeDrawable",
+            Drawable::class.java,
+        ).ifEmpty { Reflection.findAllMethods(resolverClass, "getHeaderIconBadgeDrawable") }
         return PackageIconResolverMembers(
             getPackageIconForNotification = method,
-            getPackageIcon = Reflection.findAnyMethod(resolverClass, "getPackageIcon"),
-            getHeaderIconBadgeDrawable = Reflection.findAnyMethod(
-                resolverClass,
-                "getHeaderIconBadgeDrawable",
-                Drawable::class.java,
-            ),
+            packageIconMethods = Reflection.findAllMethods(resolverClass, "getPackageIcon"),
+            headerBadgeMethods = headerBadgeMethods,
             getContext = contextGetter,
         )
     }

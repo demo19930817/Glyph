@@ -16,6 +16,7 @@ import com.fankes.coloros.notify.diagnostics.Diagnostics
 import com.fankes.coloros.notify.diagnostics.OccurrencePolicy
 import com.fankes.coloros.notify.hook.HookRegistrar
 import com.fankes.coloros.notify.hook.icon.NotificationIconResolver
+import com.fankes.coloros.notify.hook.icon.packageNameOf
 import com.fankes.coloros.notify.hook.runtimeFailure
 import java.lang.reflect.Method
 import java.util.concurrent.ConcurrentHashMap
@@ -182,39 +183,46 @@ internal class NotificationPanelHooks(
      */
     private fun installPackageIconByNameHooks() {
         val resolver = members.packageIconResolver ?: return
-        installPackageIconByNameHook(
-            resolver = resolver,
-            method = resolver.getPackageIcon,
-            tag = "systemui.panel.packageIconByName",
-        )
-        installPackageIconByNameHook(
-            resolver = resolver,
-            method = resolver.getHeaderIconBadgeDrawable,
-            tag = "systemui.panel.headerBadgeDrawable",
-        )
+        resolver.packageIconMethods.forEach { method ->
+            installPackageIconByNameHook(
+                resolver = resolver,
+                method = method,
+                tag = "systemui.panel.packageIconByName${method.parameterTag()}",
+            )
+        }
+        resolver.headerBadgeMethods.forEach { method ->
+            installPackageIconByNameHook(
+                resolver = resolver,
+                method = method,
+                tag = "systemui.panel.headerBadgeDrawable${method.parameterTag()}",
+            )
+        }
     }
+
+    private fun Method.parameterTag(): String =
+        parameterTypes.joinToString(prefix = "[", postfix = "]") { it.simpleName ?: "?" }
 
     private fun installPackageIconByNameHook(
         resolver: PackageIconResolverMembers,
-        method: Method?,
+        method: Method,
         tag: String,
     ) {
-        val target = method ?: return
-        hooks.install(target, tag) { chain ->
+        hooks.install(method, tag) { chain ->
             val snapshot = configuration.snapshot
             if (!snapshot.config.panelIconReplacementEnabled) return@install chain.proceed()
             if (!snapshot.resolver.panelThemeIconsEnabled()) return@install chain.proceed()
-            val packageName = chain.args.firstOrNull { it is String } as? String
-                ?: return@install chain.proceed()
+            // The host passes either the bare package or the whole notification key; only the
+            // normalized name can ever hit the desktop theme lookup.
+            val packageName = packageNameOf(chain.args) ?: return@install chain.proceed()
             val context = resolverContext(resolver, chain.thisObject) ?: return@install chain.proceed()
             val replacement = snapshot.resolver.resolveThemeDrawableByPackage(context, packageName)
             if (replacement == null) {
                 diagnostics.report(
                     level = DiagnosticLevel.Warning,
                     event = DiagnosticEvent.PackageIconResolved,
-                    message = "角标诊断：$packageName 按包名解析主题图标失败，保留 ColorOS 原图标",
-                    attributes = mapOf("package" to packageName),
-                    occurrence = OccurrencePolicy.Once("package_icon_by_name_missing:$packageName"),
+                    message = "角标诊断：$packageName 按包名解析主题图标失败，保留 ColorOS 原图标（$tag）",
+                    attributes = mapOf("package" to packageName, "hook" to tag),
+                    occurrence = OccurrencePolicy.Once("package_icon_by_name_missing:$packageName:$tag"),
                 )
                 return@install chain.proceed()
             }
@@ -222,8 +230,8 @@ internal class NotificationPanelHooks(
                 level = DiagnosticLevel.Info,
                 event = DiagnosticEvent.PackageIconResolved,
                 message = "角标诊断：$packageName 已按包名替换为主题图标（$tag）",
-                attributes = mapOf("package" to packageName),
-                occurrence = OccurrencePolicy.Once("package_icon_by_name_replaced:$packageName"),
+                attributes = mapOf("package" to packageName, "hook" to tag),
+                occurrence = OccurrencePolicy.Once("package_icon_by_name_replaced:$packageName:$tag"),
             )
             replacement
         }
