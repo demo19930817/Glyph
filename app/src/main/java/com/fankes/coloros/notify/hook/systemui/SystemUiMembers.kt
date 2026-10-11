@@ -57,6 +57,12 @@ internal data class PanelMembers(
     val groupIconInitEntryIconDrawable: Method?,
     val notificationEntryGetKey: Method?,
     val packageIconResolver: PackageIconResolverMembers?,
+    /** `ExpandableNotificationRow.shouldShowPublic()` — true while the redacted layout is shown. */
+    val rowShouldShowPublic: Method?,
+    /** `ExpandableNotificationRow.getPublicLayout()` — the "hide notification content" view. */
+    val rowGetPublicLayout: Method?,
+    /** `ExpandableNotificationRow.setHideSensitive(...)` — fires when the switch flips. */
+    val rowSetHideSensitive: Method?,
 )
 
 internal data class PackageIconResolverMembers(
@@ -282,6 +288,31 @@ internal object SystemUiMembers {
             return null
         }
 
+        // "Hide notification content" renders the row's *public* (redacted) layout, where ColorOS
+        // never composes a contact avatar. Those members let the hook tell that state apart from
+        // the normal avatar composition instead of guessing from the package name.
+        val rowShouldShowPublic = Reflection.findMethodReturning(
+            expandableRow,
+            "shouldShowPublic",
+            Boolean::class.javaPrimitiveType,
+        )
+        val rowGetPublicLayout = Reflection.findMethodReturning(expandableRow, "getPublicLayout", null)
+        val rowSetHideSensitive = Reflection.findMethodReturning(
+            expandableRow,
+            "setHideSensitive",
+            Void.TYPE,
+            Boolean::class.javaPrimitiveType,
+            Boolean::class.javaPrimitiveType,
+            Long::class.javaPrimitiveType,
+            Long::class.javaPrimitiveType,
+        )
+        if (rowShouldShowPublic == null || rowGetPublicLayout == null) {
+            diagnostics.memberMissing(
+                scope = "systemui:panel:public_layout",
+                message = "未找到 ExpandableNotificationRow 公开视图成员，锁屏隐藏通知内容形态不做图标替换",
+            )
+        }
+
         val headerWrapper = classes.optional(NOTIFICATION_HEADER_WRAPPER)
         val headerOnContentUpdated = headerWrapper?.let {
             Reflection.findMethodReturning(it, "onContentUpdated", Void.TYPE, expandableRow)
@@ -500,6 +531,9 @@ internal object SystemUiMembers {
             groupIconInitPillBgAndNumberColor = groupIconInitPillBgAndNumberColor,
             groupIconInitEntryIconDrawable = groupIconInitEntryIconDrawable,
             notificationEntryGetKey = notificationEntryGetKey,
+            rowShouldShowPublic = rowShouldShowPublic,
+            rowGetPublicLayout = rowGetPublicLayout,
+            rowSetHideSensitive = rowSetHideSensitive,
             packageIconResolver = resolvePackageIconResolver(classLoader, diagnostics),
         )
     }

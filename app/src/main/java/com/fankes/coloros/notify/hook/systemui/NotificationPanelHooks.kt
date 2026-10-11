@@ -34,6 +34,7 @@ internal class NotificationPanelHooks(
         installGroupIconManagerHooks()
         installPackageIconResolverHooks()
         installPackageIconByNameHooks()
+        installHiddenContentHooks()
         members.headerOnContentUpdated?.let { method ->
             hooks.install(method, "systemui.panel.header.onContentUpdated") { chain ->
                 val result = chain.proceed()
@@ -106,6 +107,93 @@ internal class NotificationPanelHooks(
                 result
             }
         }
+    }
+
+    /**
+     * With "hide notification content" the row renders its **public** (redacted) layout, where
+     * ColorOS never composes a contact avatar — the icon is the app's own small icon. The header
+     * path above deliberately yields to the host avatar, so in this state nothing at all was
+     * replaced and the lock-screen hero kept the stock icon. These hooks cover exactly that form;
+     * they only ever run while `shouldShowPublic()` is true, so the normal avatar composition in
+     * the notification shade can never be touched by them.
+     */
+    private fun installHiddenContentHooks() {
+        val setHideSensitive = members.rowSetHideSensitive ?: return
+        hooks.install(setHideSensitive, "systemui.panel.row.setHideSensitive") { chain ->
+            val result = chain.proceed()
+            chain.thisObject?.let { row ->
+                // The public layout is (re)inflated right after this call, so run once now and
+                // again after the next frames — the icon may not exist on the first pass yet.
+                applyHiddenContentIcon(row)
+                (row as? View)?.let { view ->
+                    val snapshot = configuration.snapshot
+                    view.post {
+                        if (configuration.isCurrent(snapshot)) applyHiddenContentIcon(row)
+                    }
+                    view.postDelayed(
+                        {
+                            if (configuration.isCurrent(snapshot)) applyHiddenContentIcon(row)
+                        },
+                        HIDDEN_CONTENT_RETRY_DELAY_MILLIS,
+                    )
+                }
+            }
+            result
+        }
+    }
+
+    /**
+     * @return true when the row is showing its public layout and the theme icon was applied there.
+     */
+    private fun applyHiddenContentIcon(row: Any): Boolean {
+        val snapshot = configuration.snapshot
+        if (!snapshot.config.panelIconReplacementEnabled) return false
+        if (!snapshot.resolver.panelThemeIconsEnabled()) return false
+        if (members.rowShouldShowPublic?.invoke(row) as? Boolean != true) return false
+        val layout = members.rowGetPublicLayout?.invoke(row) as? View ?: return false
+        val sbn = statusBarNotificationFromRow(row) ?: return false
+        val packageName = sbn.packageName
+        try {
+            val iconView = layout.findPublicIcon() ?: run {
+                diagnostics.report(
+                    level = DiagnosticLevel.Warning,
+                    event = DiagnosticEvent.PackageIconResolved,
+                    message = "角标诊断：$packageName 隐藏通知内容形态未找到公开视图图标，保留 ColorOS 原图标",
+                    attributes = mapOf("package" to packageName),
+                    occurrence = OccurrencePolicy.Once("hidden_content_icon_missing:$packageName"),
+                )
+                return false
+            }
+            val drawable = snapshot.resolver.resolvePanelThemeDrawable(iconView.context, sbn) ?: return false
+            if (!configuration.isCurrent(snapshot)) return false
+            iconView.background = null
+            iconView.foreground = null
+            iconView.imageTintList = null
+            iconView.clearColorFilter()
+            iconView.setImageDrawable(drawable)
+            diagnostics.report(
+                level = DiagnosticLevel.Info,
+                event = DiagnosticEvent.PackageIconResolved,
+                message = "角标诊断：$packageName 隐藏通知内容形态（公开视图）已替换为主题图标",
+                attributes = mapOf("package" to packageName),
+                occurrence = OccurrencePolicy.Once("hidden_content_replaced:$packageName"),
+            )
+            return true
+        } catch (exception: Exception) {
+            diagnostics.runtimeFailure(
+                scope = "panel:hidden_content_icon",
+                message = "隐藏通知内容形态图标注入失败，保留 ColorOS 原图标",
+                cause = exception,
+                revision = snapshot.revision,
+            )
+            return false
+        }
+    }
+
+    private fun View.findPublicIcon(): ImageView? {
+        findViewById<ImageView>(android.R.id.icon)?.let { return it }
+        val id = systemUiId("icon")
+        return if (id != 0) findViewById(id) else null
     }
 
     /**
@@ -497,6 +585,9 @@ internal class NotificationPanelHooks(
             }
             if (target == PanelIconTarget.Header) headerIconClaims.release(icon)
             val sbn = statusBarNotificationFromRow(row) ?: return
+            // "Hide notification content" shows the public (redacted) layout instead of the avatar
+            // composition; handle the icon there and stop before the avatar yield runs.
+            if (target == PanelIconTarget.Header && applyHiddenContentIcon(row)) return
             // The collapsed group row is the app's own summary and never carries a contact avatar,
             // so it keeps the configured icon source instead of yielding to the host.
             val plan = if (target == PanelIconTarget.OplusGroupSummary) {
@@ -612,5 +703,9 @@ internal class NotificationPanelHooks(
     private enum class PanelIconTarget(val diagnosticName: String) {
         Header("header"),
         OplusGroupSummary("oplus_group_summary"),
+    }
+
+    private companion object {
+        const val HIDDEN_CONTENT_RETRY_DELAY_MILLIS = 256L
     }
 }
