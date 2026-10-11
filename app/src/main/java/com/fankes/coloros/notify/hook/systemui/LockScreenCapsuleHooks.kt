@@ -9,6 +9,7 @@ import android.graphics.drawable.Icon
 import android.service.notification.StatusBarNotification
 import android.view.View
 import android.widget.ImageView
+import androidx.core.graphics.drawable.toBitmap
 import com.fankes.coloros.notify.diagnostics.Diagnostics
 import com.fankes.coloros.notify.hook.HookRegistrar
 import com.fankes.coloros.notify.hook.runtimeFailure
@@ -298,9 +299,15 @@ internal class LockScreenCapsuleHooks(
         // centre do — the contact photo of an avatar package is composed by the host in the header,
         // never here. Yielding to the host avatar therefore only left the stock icon behind, which is
         // what the lock-screen pill showed while the header above it was already themed, so the
-        // desktop theme is resolved first and unconditionally.
-        if (sbn != null && snapshot.resolver.panelThemeIconsEnabled()) {
-            resolveThemeReplacement(context, sbn, snapshot)?.let { return it }
+        // desktop theme is resolved first and unconditionally. When ColorOS hides the notification
+        // content it also never builds a per-notification bundle, so the package-name lookup below is
+        // what covers that form.
+        val themeSnapshot = snapshot.takeIf { snapshot.resolver.panelThemeIconsEnabled() }
+        if (themeSnapshot != null) {
+            sbn?.let { resolveThemeReplacement(context, it, themeSnapshot) }?.let { return it }
+            packageName?.takeIf { it.isNotBlank() }?.let { pkg ->
+                resolveThemeReplacementByPackage(context, pkg, themeSnapshot)?.let { return it }
+            }
         }
         StatusBarIconReplacementCache.lookup(key, packageName)?.let { cached ->
             val drawable = try {
@@ -384,6 +391,37 @@ internal class LockScreenCapsuleHooks(
         return ReplacementPlan(
             snapshot = snapshot,
             icon = icon,
+            drawable = drawable,
+            isColorable = false,
+        )
+    }
+
+    /**
+     * Package-name variant used by the "hide notification content" form, where ColorOS never builds a
+     * per-notification bundle and therefore hands over neither an [Icon] nor a [StatusBarNotification].
+     */
+    private fun resolveThemeReplacementByPackage(
+        context: Context,
+        packageName: String,
+        snapshot: RuntimeSnapshot,
+    ): ReplacementPlan? {
+        val drawable = snapshot.resolver.resolveThemeDrawableByPackage(context, packageName)
+            ?: return null
+        replacementDrawables.add(drawable)
+        val bitmap = try {
+            drawable.toBitmap()
+        } catch (exception: Exception) {
+            diagnostics.runtimeFailure(
+                scope = "lockscreen:capsule:theme_bitmap",
+                message = "锁屏胶囊主题图标位图转换失败",
+                cause = exception,
+                revision = snapshot.revision,
+            )
+            null
+        } ?: return null
+        return ReplacementPlan(
+            snapshot = snapshot,
+            icon = Icon.createWithBitmap(bitmap),
             drawable = drawable,
             isColorable = false,
         )
