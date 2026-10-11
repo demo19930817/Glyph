@@ -847,7 +847,8 @@ internal class NotificationPanelHooks(
      * its neighbours.
      */
     private fun loadMessagingAvatar(row: Any, context: Context, sbn: StatusBarNotification): Drawable? {
-        loadHostMessagingAvatar(row, context)?.let { return it }
+        val hostAvatar = loadHostMessagingAvatar(row, context)
+        if (hostAvatar != null) return hostAvatar
         return runCatching { sbn.notification.largeIcon?.loadDrawable(context) }.getOrNull()
     }
 
