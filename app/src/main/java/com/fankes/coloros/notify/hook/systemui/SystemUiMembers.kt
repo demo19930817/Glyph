@@ -63,6 +63,17 @@ internal data class PanelMembers(
     val rowGetPublicLayout: Method?,
     /** `ExpandableNotificationRow.setHideSensitive(...)` — fires when the switch flips. */
     val rowSetHideSensitive: Method?,
+    /**
+     * `CapsuleNotificationUtils.INSTANCE.tryLoadMessagingAvatar(Context, NotificationEntry)` — the
+     * exact avatar source the aggregated lock-screen card uses, so completed rows match it.
+     */
+    val messagingAvatarLoader: Method?,
+    val messagingAvatarInstance: Any?,
+    /**
+     * `LayerDrawableWithAppIconKt.createBackgroundWithAppIcon(Context, base, badge, pkg, userId)` —
+     * the host's own avatar+badge composer, reused so completed rows keep the stock look.
+     */
+    val backgroundWithAppIconFactory: Method?,
 )
 
 internal data class PackageIconResolverMembers(
@@ -313,6 +324,49 @@ internal object SystemUiMembers {
             )
         }
 
+        // Host helpers for completing rows where ColorOS falls back to the plain app icon because
+        // its people-avatar channel has no entry for the sender: the aggregated lock-screen card
+        // reads the avatar straight from the MessagingStyle instead, so those two let the module
+        // rebuild the very same avatar+badge composite for the rows the header path left behind.
+        val capsuleUtils = loadOptional(
+            "com.oplus.systemui.notification.lockscreen.notification.CapsuleNotificationUtils",
+            classLoader,
+        )
+        val messagingAvatarLoader = capsuleUtils?.let { utils ->
+            Reflection.findMethodReturning(
+                utils,
+                "tryLoadMessagingAvatar",
+                Drawable::class.java,
+                Context::class.java,
+                notificationEntry,
+            )
+        }
+        val messagingAvatarInstance = messagingAvatarLoader?.let { method ->
+            if (java.lang.reflect.Modifier.isStatic(method.modifiers)) {
+                null
+            } else {
+                capsuleUtils.declaredFields
+                    .firstOrNull { it.name == "INSTANCE" }
+                    ?.apply { isAccessible = true }
+                    ?.get(null)
+            }
+        }
+        val backgroundWithAppIconFactory = loadOptional(
+            "com.oplus.systemui.notification.row.wrapper.LayerDrawableWithAppIconKt",
+            classLoader,
+        )?.let { factory ->
+            Reflection.findMethodReturning(
+                factory,
+                "createBackgroundWithAppIcon",
+                Drawable::class.java,
+                Context::class.java,
+                Drawable::class.java,
+                Drawable::class.java,
+                String::class.java,
+                java.lang.Integer::class.java,
+            )
+        }
+
         val headerWrapper = classes.optional(NOTIFICATION_HEADER_WRAPPER)
         val headerOnContentUpdated = headerWrapper?.let {
             Reflection.findMethodReturning(it, "onContentUpdated", Void.TYPE, expandableRow)
@@ -534,6 +588,9 @@ internal object SystemUiMembers {
             rowShouldShowPublic = rowShouldShowPublic,
             rowGetPublicLayout = rowGetPublicLayout,
             rowSetHideSensitive = rowSetHideSensitive,
+            messagingAvatarLoader = messagingAvatarLoader,
+            messagingAvatarInstance = messagingAvatarInstance,
+            backgroundWithAppIconFactory = backgroundWithAppIconFactory,
             packageIconResolver = resolvePackageIconResolver(classLoader, diagnostics),
         )
     }

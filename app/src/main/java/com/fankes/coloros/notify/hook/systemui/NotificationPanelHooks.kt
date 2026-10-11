@@ -602,7 +602,14 @@ internal class NotificationPanelHooks(
                     sbn = sbn,
                     originalSmallIcon = sbn.originalSmallIcon(diagnostics, snapshot.revision),
                 )
-            } ?: return
+            } ?: run {
+                // Null plan on a header row usually means "yield to the host avatar" — complete
+                // the rows where the host's own avatar channel came up empty instead.
+                if (target == PanelIconTarget.Header) {
+                    scheduleHostAvatarCompletion(icon, row, sbn, snapshot)
+                }
+                return
+            }
 
             icon.applyRenderPlan(plan, target)
             if (target == PanelIconTarget.Header) {
@@ -707,5 +714,101 @@ internal class NotificationPanelHooks(
 
     private companion object {
         const val HIDDEN_CONTENT_RETRY_DELAY_MILLIS = 256L
+        const val AVATAR_COMPLETION_RETRY_SHORT_MILLIS = 256L
+        const val AVATAR_COMPLETION_RETRY_LONG_MILLIS = 768L
+    }
+
+    /**
+     * ColorOS composes "contact avatar + app-icon badge" for conversation rows from its
+     * people-avatar channel, but that channel has no entry for some senders (channel posts, for
+     * example) — those rows silently fall back to the plain app icon while the aggregated
+     * lock-screen card next to them still shows the avatar, because the card reads it straight
+     * from the MessagingStyle. The module never removes avatars, it only completes the rows the
+     * host left behind: load the avatar from the very same helper the card uses and rebuild the
+     * composite with the host's own factory, so size, radius and badge placement stay stock.
+     *
+     * The host paints its composite asynchronously, so the attempt is retried; a row that already
+     * carries a host composite (or one built here — both are the host's DrawableWithBadge) is
+     * left alone.
+     */
+    private fun scheduleHostAvatarCompletion(
+        iconView: ImageView,
+        row: Any,
+        sbn: StatusBarNotification,
+        snapshot: RuntimeSnapshot,
+    ) {
+        if (members.messagingAvatarLoader == null || members.backgroundWithAppIconFactory == null) return
+        if (applyHostAvatarCompletion(iconView, row, sbn, snapshot)) return
+        iconView.postDelayed(
+            { if (configuration.isCurrent(snapshot)) applyHostAvatarCompletion(iconView, row, sbn, snapshot) },
+            AVATAR_COMPLETION_RETRY_SHORT_MILLIS,
+        )
+        iconView.postDelayed(
+            { if (configuration.isCurrent(snapshot)) applyHostAvatarCompletion(iconView, row, sbn, snapshot) },
+            AVATAR_COMPLETION_RETRY_LONG_MILLIS,
+        )
+    }
+
+    /** @return true when nothing more has to be done for this row (done, impossible or failed). */
+    private fun applyHostAvatarCompletion(
+        iconView: ImageView,
+        row: Any,
+        sbn: StatusBarNotification,
+        snapshot: RuntimeSnapshot,
+    ): Boolean {
+        val packageName = sbn.packageName
+        try {
+            // Only rows the host would have avatar-composed are completed; every other row keeps
+            // its own themed app icon from the resolver hook.
+            if (!snapshot.resolver.shouldYieldToHostAvatar(iconView.context, packageName)) return true
+            val current = iconView.drawable
+            // The host's composite (and ours, built by the same factory) is DrawableWithBadge.
+            if (current?.javaClass?.name?.endsWith("DrawableWithBadge") == true) return true
+            val avatar = loadMessagingAvatar(row, iconView.context) ?: return false
+            val badge = snapshot.resolver.resolvePanelThemeDrawable(iconView.context, sbn) ?: return false
+            val composite = members.backgroundWithAppIconFactory?.invoke(
+                null,
+                iconView.context,
+                avatar,
+                badge,
+                packageName,
+                sbn.userId,
+            ) as? Drawable ?: return false
+            if (!configuration.isCurrent(snapshot)) return true
+            // The host may have finished its own composite while the avatar was loading.
+            if (iconView.drawable?.javaClass?.name?.endsWith("DrawableWithBadge") == true) return true
+            iconView.background = null
+            iconView.foreground = null
+            iconView.imageTintList = null
+            iconView.clearColorFilter()
+            iconView.setImageDrawable(composite)
+            diagnostics.report(
+                level = DiagnosticLevel.Info,
+                event = DiagnosticEvent.PackageIconResolved,
+                message = "角标诊断：$packageName 已补齐会话头像+角标合成（宿主头像通道缺失）",
+                attributes = mapOf("package" to packageName),
+                occurrence = OccurrencePolicy.Once("avatar_completion:$packageName"),
+            )
+            return true
+        } catch (exception: Exception) {
+            diagnostics.runtimeFailure(
+                scope = "panel:avatar_completion",
+                message = "会话头像补齐失败，保留 ColorOS 原结果",
+                cause = exception,
+                revision = snapshot.revision,
+            )
+            return true
+        }
+    }
+
+    private fun loadMessagingAvatar(row: Any, context: Context): Drawable? {
+        val loader = members.messagingAvatarLoader ?: return null
+        val entry = members.expandableRowGetEntry.invoke(row) ?: return null
+        val host = members.messagingAvatarInstance
+        return if (host == null) {
+            loader.invoke(null, context, entry) as? Drawable
+        } else {
+            loader.invoke(host, context, entry) as? Drawable
+        }
     }
 }
