@@ -17,6 +17,7 @@ import com.fankes.coloros.notify.diagnostics.Diagnostics
 import com.fankes.coloros.notify.diagnostics.OccurrencePolicy
 import com.fankes.coloros.notify.hook.HookRegistrar
 import com.fankes.coloros.notify.hook.icon.NotificationIconResolver
+import com.fankes.coloros.notify.hook.memberMissing
 import com.fankes.coloros.notify.hook.runtimeFailure
 import java.lang.reflect.Method
 import java.util.Collections
