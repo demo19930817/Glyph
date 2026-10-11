@@ -65,40 +65,6 @@ internal object Reflection {
     }
 
     /**
-     * Every declared method with the given name, including overloads and inherited ones.
-     *
-     * Vendors routinely keep the name and add or drop parameters per ColorOS release; hooking only
-     * the first match silently misses the call sites that go through an overload (`getPackageIcon`
-     * is called with both a bare package and a notification key on the same build).
-     */
-    fun findAllMethods(
-        clazz: Class<*>,
-        name: String,
-        expectedReturnType: Class<*>? = null,
-    ): List<Method> {
-        val found = LinkedHashMap<String, Method>()
-        var current: Class<*>? = clazz
-        while (current != null && current != Any::class.java) {
-            current.declaredMethods.filter { method ->
-                method.name == name &&
-                    (expectedReturnType == null || expectedReturnType.isAssignableFrom(method.returnType))
-            }.forEach { method ->
-                method.isAccessible = true
-                found.putIfAbsent(signatureKey(method), method)
-            }
-            current = current.superclass
-        }
-        return found.values.toList()
-    }
-
-    private fun signatureKey(method: Method): String = buildString {
-        append(method.returnType.name)
-        append('(')
-        method.parameterTypes.joinTo(this, separator = ",") { it.name }
-        append(')')
-    }
-
-    /**
      * Matches a declared method by exact parameter types. A `null` entry in [params] acts as a
      * wildcard for that position, which is needed for parameter types that the target process
      * resolves from a different class loader than the module (for example entry points taking a

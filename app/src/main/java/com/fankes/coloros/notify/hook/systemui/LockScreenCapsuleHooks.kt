@@ -12,7 +12,6 @@ import android.widget.ImageView
 import androidx.core.graphics.drawable.toBitmap
 import com.fankes.coloros.notify.diagnostics.Diagnostics
 import com.fankes.coloros.notify.hook.HookRegistrar
-import com.fankes.coloros.notify.hook.icon.normalizePackageName
 import com.fankes.coloros.notify.hook.runtimeFailure
 import java.util.Collections
 import java.util.WeakHashMap
@@ -306,8 +305,7 @@ internal class LockScreenCapsuleHooks(
         val themeSnapshot = snapshot.takeIf { snapshot.resolver.panelThemeIconsEnabled() }
         if (themeSnapshot != null) {
             sbn?.let { resolveThemeReplacement(context, it, themeSnapshot) }?.let { return it }
-            // The host hands over either the bare package or the whole notification key here too.
-            normalizePackageName(packageName)?.let { pkg ->
+            packageName?.takeIf { it.isNotBlank() }?.let { pkg ->
                 resolveThemeReplacementByPackage(context, pkg, themeSnapshot)?.let { return it }
             }
         }
