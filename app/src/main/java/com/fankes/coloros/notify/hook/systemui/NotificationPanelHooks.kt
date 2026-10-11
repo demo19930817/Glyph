@@ -849,7 +849,9 @@ internal class NotificationPanelHooks(
     private fun loadMessagingAvatar(row: Any, context: Context, sbn: StatusBarNotification): Drawable? {
         val hostAvatar = loadHostMessagingAvatar(row, context)
         if (hostAvatar != null) return hostAvatar
-        return runCatching { sbn.notification.largeIcon?.loadDrawable(context) }.getOrNull()
+        // Notification.largeIcon is the deprecated Bitmap field; the Icon-based getter is
+        // getLargeIcon(), which is what can be loaded through Icon.loadDrawable here.
+        return runCatching { sbn.notification.getLargeIcon()?.loadDrawable(context) }.getOrNull()
     }
 
     private fun loadHostMessagingAvatar(row: Any, context: Context): Drawable? {
