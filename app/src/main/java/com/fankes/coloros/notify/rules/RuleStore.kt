@@ -26,6 +26,24 @@ object RuleStore {
         val avatarPriorityPackages: Set<String> = emptySet(),
     )
 
+    /**
+     * Stand-in configuration for the window between SystemUI start and the first published
+     * snapshot: the real one is read asynchronously from the module process.
+     *
+     * The placeholder used to be an all-on [ModuleConfig] with an empty
+     * [ModuleConfig.avatarPriorityPackages], so every package counted as "not picked" and every
+     * surface replaced the contact avatar ColorOS composes itself — a reboot's first
+     * notification regularly lands in that window and kept the wrong icon. "Nothing is known
+     * yet" must therefore mean "replace nothing and yield everywhere", which is also what the
+     * diagnostics already promise when the remote preferences cannot be opened at all.
+     */
+    fun unloadedModuleConfig(): ModuleConfig =
+        ModuleConfig(
+            rulesEnabled = false,
+            panelIconReplacementEnabled = false,
+            lockScreenCapsuleIconReplacementEnabled = false,
+        )
+
     data class MirrorSnapshot(
         val rulesJson: String,
         val rulesCount: Int,

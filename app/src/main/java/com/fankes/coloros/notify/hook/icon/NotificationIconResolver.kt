@@ -18,6 +18,13 @@ import com.fankes.coloros.notify.rules.RuleStore
 
 internal class NotificationIconResolver(
     config: RuleStore.ModuleConfig,
+    /**
+     * False while the placeholder configuration still stands in — see
+     * [RuleStore.unloadedModuleConfig]. Avatar-capable surfaces then yield unconditionally:
+     * an empty pick set is "not known yet", not "nothing picked", and a replacement that lands
+     * on the host's avatar composition can no longer be corrected by it.
+     */
+    private val configLoaded: Boolean = true,
     private val rules: Map<String, IconRule>,
     private val themeIcons: ThemeIconProvider,
     private val iconConfiguration: OplusIconConfigurationReader,
@@ -356,6 +363,10 @@ internal class NotificationIconResolver(
      * avatar for important conversations, and `StatusBarHooks` already lets that case through.
      */
     fun shouldYieldToHostAvatar(context: Context, packageName: String?): Boolean {
+        // The remote configuration is still being read: yield on every surface that can show
+        // the avatar, including the ones (AOD) that would otherwise reuse a status-bar
+        // replacement cached during this window.
+        if (!configLoaded) return true
         val yield = NotificationIconPolicy.shouldYieldToHostAvatar(
             config = policyConfig,
             packageName = packageName,
